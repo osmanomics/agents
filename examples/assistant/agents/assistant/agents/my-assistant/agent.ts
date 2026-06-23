@@ -26,6 +26,13 @@ import { tool, generateText } from "ai";
 import type { LanguageModel, ToolSet } from "ai";
 import { z } from "zod";
 import { AssistantDirectory } from "../../agent";
+import { RSS_ACTIONS } from "../../rss";
+import type {
+  RssItem,
+  RssRecentInput,
+  RssSearchInput,
+  RssStats
+} from "../../rss";
 import { SharedMCPClient } from "../../shared-mcp-client";
 import { SharedWorkspace } from "../../shared-workspace";
 import type { AgentConfig } from "../../types";
@@ -126,7 +133,7 @@ export class MyAssistant extends Think<Env> {
   configureSession(session: Session) {
     const persona =
       this.getConfig<AgentConfig>()?.persona ||
-      "You are a capable technical assistant. You have access to a persistent workspace, sandboxed code execution, a real browser you can drive over the Chrome DevTools Protocol (the `cdp.*` namespace inside execute), stateless one-shot browsing tools (browser_markdown, browser_extract, browser_links, browser_scrape), and the ability to create new tools on the fly. You think before you act, and you prefer writing code over making many sequential tool calls.";
+      "You are a capable technical assistant and regulatory RSS feed analyst. You have access to a seeded Health Canada regulatory RSS feed, a persistent workspace, sandboxed code execution, a real browser you can drive over the Chrome DevTools Protocol (the `cdp.*` namespace inside execute), stateless one-shot browsing tools (browser_markdown, browser_extract, browser_links, browser_scrape), and the ability to create new tools on the fly. You think before you act, and you prefer writing code over making many sequential tool calls.";
 
     return session
       .withContext("soul", {
@@ -138,7 +145,9 @@ Be concise. Prefer short, direct answers over lengthy explanations.
 The execute tool runs JavaScript you write in a sandboxed environment. Use it for multi-file operations, data transformations, or any task that would require many sequential tool calls. Inside that sandbox the only globals are the connector namespaces listed in the tool description (e.g. \`state.*\` for workspace files, \`tools.*\` for your tools) plus \`codemode\` — there is no \`host\` object, \`fs\`, or Node.js API.
 For browsing the web, prefer the one-shot Quick Action tools — \`browser_markdown\` to read a page, \`browser_extract\` to pull structured data, \`browser_links\` to list links, \`browser_scrape\` to grab elements — and only reach for the interactive \`cdp.*\` API inside execute when you need to click, type, or navigate across multiple steps.
 You can create extensions: new tools that persist across conversations. Offer to create one when a recurring task would benefit from it.
-When you learn something about the user or their project, save it to memory.`
+When you learn something about the user or their project, save it to memory.
+For regulatory feed questions, use the regulatory feed tools first and cite item titles, categories, actions, dates, and links from tool results. Do not claim live refresh or reclassification in this prototype.
+`
         }
       })
       .withContext("memory", {
@@ -207,6 +216,44 @@ When you learn something about the user or their project, save it to memory.`
       // the model picks Quick Actions for simple reads and `execute` for
       // multi-step automation. Shares the same `BROWSER` binding.
       ...createQuickActionTools({ browser: this.env.BROWSER }),
+
+      searchRegulatoryFeed: tool({
+        description:
+          "Search the seeded Health Canada regulatory RSS feed by keyword, category, or action. Use this for feed questions that need specific source records.",
+        inputSchema: z.object({
+          query: z
+            .string()
+            .optional()
+            .describe(
+              "Optional keyword search over title, category, action, date, and link"
+            ),
+          action: z.enum(RSS_ACTIONS).optional(),
+          category: z.string().optional(),
+          limit: z.number().int().min(1).max(20).optional()
+        }),
+        execute: async (input) => {
+          return this.searchRegulatoryFeed(input);
+        }
+      }),
+
+      recentRegulatoryFeed: tool({
+        description:
+          "Return the most recent seeded regulatory RSS feed items, optionally filtered by triage action.",
+        inputSchema: z.object({
+          action: z.enum(RSS_ACTIONS).optional(),
+          limit: z.number().int().min(1).max(20).optional()
+        }),
+        execute: async (input) => {
+          return this.recentRegulatoryFeed(input);
+        }
+      }),
+
+      regulatoryFeedStats: tool({
+        description:
+          "Return counts and latest-date metadata for the seeded regulatory RSS feed.",
+        inputSchema: z.object({}),
+        execute: async () => this.regulatoryFeedStats()
+      }),
 
       getWeather: tool({
         description: "Get the current weather for a city",
@@ -352,6 +399,21 @@ When you learn something about the user or their project, save it to memory.`
         ]
       }
     ]);
+  }
+
+  async searchRegulatoryFeed(input: RssSearchInput = {}): Promise<RssItem[]> {
+    const directory = await this.parentAgent(AssistantDirectory);
+    return directory.searchRssItems(input);
+  }
+
+  async recentRegulatoryFeed(input: RssRecentInput = {}): Promise<RssItem[]> {
+    const directory = await this.parentAgent(AssistantDirectory);
+    return directory.recentRssItems(input);
+  }
+
+  async regulatoryFeedStats(): Promise<RssStats> {
+    const directory = await this.parentAgent(AssistantDirectory);
+    return directory.getRssStats();
   }
 
   // `addServer` / `removeServer` used to live here as `@callable`

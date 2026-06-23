@@ -23,6 +23,11 @@ the sub-agent routing primitive from `agents`.
   sets via one DO RPC hop to the parent. `useChats()` surfaces
   `mcpState` / `addMcpServer` / `removeMcpServer` so the MCP panel is
   the same across chats and open tabs
+- **Seeded regulatory RSS feed chat** — `AssistantDirectory` seeds a local
+  SQLite `rss_items` table from copied Health Canada feed data and exposes
+  bounded search, recent items, and stats to every chat. `MyAssistant` uses
+  those records through server-side tools, and the Kumo UI includes a compact
+  responsive Regulatory Feed panel
 - **Live cross-chat file updates** — the directory's `Workspace` is wired
   with `onChange` → `broadcast`, so every open tab's file browser updates
   live whenever any chat writes, edits, or deletes a file. `useChats()`
@@ -84,6 +89,17 @@ npm start
 
 Open the app, click **Sign in with GitHub**, approve the OAuth flow, and you
 will land in the Think assistant scoped to your GitHub login.
+
+Try asking regulatory feed questions such as:
+
+```text
+Show recent MDEL updates
+What needs assessment this week?
+Summarize Track & assess items
+```
+
+The prototype uses copied seed data only; it does not refresh RSS feeds,
+reclassify items, or share data through D1 yet.
 
 > [!TIP]
 > For local development you can skip the OAuth flow entirely: put

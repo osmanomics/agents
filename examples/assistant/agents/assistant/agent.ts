@@ -7,6 +7,22 @@ import type { FileInfo, WorkspaceChangeEvent } from "@cloudflare/shell";
 import { nanoid } from "nanoid";
 import { MyAssistant } from "./agents/my-assistant/agent";
 import type { ChatSummary, DirectoryState, McpToolDescriptor } from "./types";
+import {
+  RSS_SEED_ITEMS,
+  createEmptyRssStats,
+  matchesRssSearch,
+  normalizeRssLimit,
+  rssRowToItem,
+  sortCounts
+} from "./rss";
+import type {
+  RssCount,
+  RssItem,
+  RssItemRow,
+  RssRecentInput,
+  RssSearchInput,
+  RssStats
+} from "./rss";
 
 // ── AssistantDirectory — one DO per authenticated GitHub user ─────────
 //
@@ -92,6 +108,7 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
       updated_at INTEGER NOT NULL,
       last_message_preview TEXT
     )`;
+    this._initializeRssFeed();
     this._refreshState();
 
     // Cross-chat scheduled work is declared in `getScheduledTasks()` below
@@ -248,6 +265,120 @@ export class AssistantDirectory extends Think<Env, DirectoryState> {
         last_message_preview = excluded.last_message_preview
     `;
     this._refreshState();
+  }
+
+  // ── Regulatory RSS feed prototype ─────────────────────────────────
+
+  private _initializeRssFeed(): void {
+    this.sql`CREATE TABLE IF NOT EXISTS rss_items (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      link TEXT NOT NULL UNIQUE,
+      pub_date TEXT NOT NULL,
+      published_at INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      action TEXT NOT NULL
+    )`;
+    this.sql`CREATE INDEX IF NOT EXISTS rss_items_published_at_idx
+      ON rss_items (published_at DESC)`;
+    this.sql`CREATE INDEX IF NOT EXISTS rss_items_action_idx
+      ON rss_items (action)`;
+
+    const [row] = this.sql<{ count: number }>`
+      SELECT COUNT(*) AS count FROM rss_items
+    `;
+    if ((row?.count ?? 0) > 0) return;
+
+    for (const item of RSS_SEED_ITEMS) {
+      this.sql`
+        INSERT OR IGNORE INTO rss_items
+          (id, title, link, pub_date, published_at, category, action)
+        VALUES
+          (
+            ${item.id},
+            ${item.title},
+            ${item.link},
+            ${item.pubDate},
+            ${item.publishedAt},
+            ${item.category},
+            ${item.action}
+          )
+      `;
+    }
+  }
+
+  private _listRssItems(scanLimit = 1000): RssItem[] {
+    const rows = this.sql<RssItemRow>`
+      SELECT
+        id,
+        title,
+        link,
+        pub_date,
+        published_at,
+        category,
+        action
+      FROM rss_items
+      ORDER BY published_at DESC, title ASC
+      LIMIT ${scanLimit}
+    `;
+    return rows.map(rssRowToItem);
+  }
+
+  @callable()
+  searchRssItems(input: RssSearchInput = {}): RssItem[] {
+    const limit = normalizeRssLimit(input.limit);
+    return this._listRssItems()
+      .filter((item) => matchesRssSearch(item, input))
+      .slice(0, limit);
+  }
+
+  @callable()
+  recentRssItems(input: RssRecentInput = {}): RssItem[] {
+    const limit = normalizeRssLimit(input.limit);
+    return this._listRssItems()
+      .filter((item) => (input.action ? item.action === input.action : true))
+      .slice(0, limit);
+  }
+
+  @callable()
+  getRssStats(): RssStats {
+    const [totalRow] = this.sql<{ total: number }>`
+      SELECT COUNT(*) AS total FROM rss_items
+    `;
+    const total = totalRow?.total ?? 0;
+    if (total === 0) return createEmptyRssStats();
+
+    const [latest] = this.sql<{
+      pub_date: string;
+      published_at: number;
+    }>`
+      SELECT pub_date, published_at
+      FROM rss_items
+      ORDER BY published_at DESC, title ASC
+      LIMIT 1
+    `;
+    const actionCounts = sortCounts(
+      this.sql<RssCount>`
+        SELECT action AS name, COUNT(*) AS count
+        FROM rss_items
+        GROUP BY action
+      `
+    );
+    const categoryCounts = sortCounts(
+      this.sql<RssCount>`
+        SELECT category AS name, COUNT(*) AS count
+        FROM rss_items
+        GROUP BY category
+      `
+    );
+
+    return {
+      total,
+      latestPubDate: latest?.pub_date ?? null,
+      latestPublishedAt: latest?.published_at ?? null,
+      actionCounts,
+      categoryCounts
+    };
   }
 
   // ── Scheduled work (declarative, directory-owned, fans out to one child) ──

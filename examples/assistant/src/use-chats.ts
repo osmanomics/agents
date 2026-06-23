@@ -32,6 +32,12 @@
 import { useCallback, useState } from "react";
 import { useAgent } from "agents/react";
 import type { MCPServersState } from "agents";
+import type {
+  RssItem,
+  RssRecentInput,
+  RssSearchInput,
+  RssStats
+} from "../agents/assistant/rss";
 import type { ChatSummary, DirectoryState } from "../agents/assistant/types";
 
 const EMPTY_MCP_STATE: MCPServersState = {
@@ -81,6 +87,12 @@ export interface UseChats {
   addMcpServer: (name: string, url: string) => Promise<AddMcpServerResult>;
   /** Remove a registered MCP server by id. */
   removeMcpServer: (id: string) => Promise<void>;
+  /** Search the seeded regulatory RSS feed owned by the directory. */
+  searchRssItems: (input?: RssSearchInput) => Promise<RssItem[]>;
+  /** Read the latest seeded regulatory RSS feed items. */
+  recentRssItems: (input?: RssRecentInput) => Promise<RssItem[]>;
+  /** Read aggregate counts for the seeded regulatory RSS feed. */
+  getRssStats: () => Promise<RssStats>;
 }
 
 function isWorkspaceChangeMessage(value: unknown): boolean {
@@ -166,6 +178,29 @@ export function useChats(): UseChats {
     [directory]
   );
 
+  const searchRssItems = useCallback(
+    async (input?: RssSearchInput) =>
+      (await directory.call(
+        "searchRssItems",
+        input ? [input] : []
+      )) as RssItem[],
+    [directory]
+  );
+
+  const recentRssItems = useCallback(
+    async (input?: RssRecentInput) =>
+      (await directory.call(
+        "recentRssItems",
+        input ? [input] : []
+      )) as RssItem[],
+    [directory]
+  );
+
+  const getRssStats = useCallback(
+    async () => (await directory.call("getRssStats", [])) as RssStats,
+    [directory]
+  );
+
   return {
     directory,
     chats,
@@ -175,6 +210,9 @@ export function useChats(): UseChats {
     renameChat,
     deleteChat,
     addMcpServer,
-    removeMcpServer
+    removeMcpServer,
+    searchRssItems,
+    recentRssItems,
+    getRssStats
   };
 }

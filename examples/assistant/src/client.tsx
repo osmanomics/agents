@@ -73,7 +73,8 @@ import {
   SlidersHorizontalIcon,
   FileTextIcon,
   PencilIcon,
-  ChatsIcon
+  ChatsIcon,
+  RssIcon
 } from "@phosphor-icons/react";
 import {
   fetchCurrentUser,
@@ -82,6 +83,8 @@ import {
   type AuthUser
 } from "./auth-client";
 import { useChats } from "./use-chats";
+import { RSS_ACTIONS, type RssAction } from "../agents/assistant/rss/types";
+import type { RssItem, RssStats } from "../agents/assistant/rss";
 import type { ChatSummary } from "../agents/assistant/types";
 
 type ConnectionStatus = "connecting" | "connected" | "disconnected";
@@ -111,6 +114,15 @@ function ConnectionIndicator({ status }: { status: ConnectionStatus }) {
       <span className={`text-xs ${text}`}>{label}</span>
     </output>
   );
+}
+
+function formatRssDate(item: RssItem): string {
+  if (!item.publishedAt) return item.pubDate || "Unknown date";
+  return new Date(item.publishedAt).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
 }
 
 function ModeToggle() {
@@ -416,6 +428,8 @@ function Chat({
   mcpState,
   addMcpServer,
   removeMcpServer,
+  recentRssItems,
+  getRssStats,
   onRequestRename,
   onRequestDelete
 }: {
@@ -444,6 +458,13 @@ function Chat({
   ) => Promise<{ id: string; state: string; authUrl?: string }>;
   /** Remove an MCP server from the shared registry. */
   removeMcpServer: (id: string) => Promise<void>;
+  /** Read latest seeded regulatory RSS items from the directory. */
+  recentRssItems: (input?: {
+    action?: RssAction;
+    limit?: number;
+  }) => Promise<RssItem[]>;
+  /** Read aggregate seeded regulatory RSS feed stats from the directory. */
+  getRssStats: () => Promise<RssStats>;
   onRequestRename: () => void;
   onRequestDelete: () => void;
 }) {
@@ -456,6 +477,13 @@ function Chat({
   const [mcpUrl, setMcpUrl] = useState("");
   const [isAddingServer, setIsAddingServer] = useState(false);
   const mcpPanelRef = useRef<HTMLDivElement>(null);
+
+  const [showFeedPanel, setShowFeedPanel] = useState(false);
+  const feedPanelRef = useRef<HTMLDivElement>(null);
+  const [feedAction, setFeedAction] = useState<RssAction | undefined>();
+  const [feedItems, setFeedItems] = useState<RssItem[]>([]);
+  const [feedStats, setFeedStats] = useState<RssStats | null>(null);
+  const [isFeedLoading, setIsFeedLoading] = useState(false);
 
   const [showFilesPanel, setShowFilesPanel] = useState(false);
   const filesPanelRef = useRef<HTMLDivElement>(null);
@@ -524,6 +552,20 @@ function Chat({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showMcpPanel]);
+
+  useEffect(() => {
+    if (!showFeedPanel) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (
+        feedPanelRef.current &&
+        !feedPanelRef.current.contains(e.target as Node)
+      ) {
+        setShowFeedPanel(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showFeedPanel]);
 
   useEffect(() => {
     if (!showFilesPanel) return;
@@ -665,6 +707,27 @@ function Chat({
   const serverEntries = Object.entries(mcpState.servers);
   const mcpToolCount = mcpState.tools.length;
 
+  const refreshFeed = useCallback(
+    async (action = feedAction) => {
+      setIsFeedLoading(true);
+      try {
+        const [stats, items] = await Promise.all([
+          getRssStats(),
+          recentRssItems({ action, limit: 8 })
+        ]);
+        setFeedStats(stats);
+        setFeedItems(items);
+      } catch (e) {
+        console.error("Failed to load regulatory feed:", e);
+        setFeedStats(null);
+        setFeedItems([]);
+      } finally {
+        setIsFeedLoading(false);
+      }
+    },
+    [feedAction, getRssStats, recentRssItems]
+  );
+
   const {
     messages,
     sendMessage,
@@ -776,7 +839,7 @@ function Chat({
   return (
     <div className="flex flex-col h-full bg-kumo-elevated min-w-0">
       <header className="px-5 py-3 bg-kumo-base border-b border-kumo-line">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2 min-w-0">
             <h2 className="text-base font-semibold text-kumo-default truncate">
               {chatTitle}
@@ -799,8 +862,148 @@ function Chat({
             />
             <CopyTranscriptButton messages={messages} chatTitle={chatTitle} />
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <ConnectionIndicator status={connectionStatus} />
+            <div className="relative" ref={feedPanelRef}>
+              <Button
+                variant="secondary"
+                icon={<RssIcon size={16} />}
+                onClick={() => {
+                  setShowFeedPanel(!showFeedPanel);
+                  if (!showFeedPanel) void refreshFeed();
+                }}
+              >
+                Feed
+                {feedStats && (
+                  <Badge variant="primary" className="ml-1.5">
+                    {feedStats.total}
+                  </Badge>
+                )}
+              </Button>
+
+              {showFeedPanel && (
+                <div className="absolute right-0 top-full mt-2 w-96 max-w-[90vw] z-50">
+                  <Surface className="rounded-xl ring ring-kumo-line shadow-lg p-4 space-y-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <RssIcon size={16} className="text-kumo-accent" />
+                        <div className="min-w-0">
+                          <Text size="sm" bold>
+                            Regulatory Feed
+                          </Text>
+                          <span className="mt-0.5 block text-xs text-kumo-subtle">
+                            Seeded Health Canada RSS triage
+                          </span>
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        shape="square"
+                        aria-label="Close feed panel"
+                        icon={<XIcon size={14} />}
+                        onClick={() => setShowFeedPanel(false)}
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="secondary">
+                        {feedStats ? `${feedStats.total} items` : "Loading"}
+                      </Badge>
+                      {feedStats?.latestPublishedAt && (
+                        <Badge variant="secondary">
+                          Latest{" "}
+                          {new Date(
+                            feedStats.latestPublishedAt
+                          ).toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric"
+                          })}
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant={feedAction ? "secondary" : "primary"}
+                        size="sm"
+                        onClick={() => {
+                          setFeedAction(undefined);
+                          void refreshFeed(undefined);
+                        }}
+                      >
+                        All
+                      </Button>
+                      {RSS_ACTIONS.filter(
+                        (action) => action !== "Manual Review"
+                      ).map((action) => (
+                        <Button
+                          key={action}
+                          variant={
+                            feedAction === action ? "primary" : "secondary"
+                          }
+                          size="sm"
+                          onClick={() => {
+                            setFeedAction(action);
+                            void refreshFeed(action);
+                          }}
+                        >
+                          {action}
+                        </Button>
+                      ))}
+                    </div>
+
+                    {isFeedLoading ? (
+                      <span className="text-xs text-kumo-subtle block">
+                        Loading feed…
+                      </span>
+                    ) : feedItems.length === 0 ? (
+                      <Empty
+                        icon={<RssIcon size={24} />}
+                        title="No feed items"
+                        description="Try another action filter."
+                      />
+                    ) : (
+                      <div className="space-y-2 max-h-96 overflow-y-auto">
+                        {feedItems.map((item) => (
+                          <Surface
+                            key={item.id}
+                            className="p-2.5 rounded-lg ring ring-kumo-line"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge
+                                variant={
+                                  item.action === "Track & assess"
+                                    ? "primary"
+                                    : "secondary"
+                                }
+                              >
+                                {item.action}
+                              </Badge>
+                              <span className="text-xs text-kumo-subtle">
+                                {formatRssDate(item)}
+                              </span>
+                            </div>
+                            <a
+                              href={item.link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-2 block text-sm text-kumo-default hover:text-kumo-accent truncate"
+                            >
+                              {item.title}
+                            </a>
+                            <span className="mt-1 block text-xs text-kumo-subtle truncate">
+                              {item.category}
+                            </span>
+                          </Surface>
+                        ))}
+                      </div>
+                    )}
+                  </Surface>
+                </div>
+              )}
+            </div>
             <div className="relative" ref={mcpPanelRef}>
               <Button
                 variant="secondary"
@@ -1257,14 +1460,10 @@ function Chat({
                     </Text>
                     <span className="mt-1 block">
                       <Text size="xs" variant="secondary">
-                        A showcase of all Project Think features: workspace
-                        tools, sandboxed code execution, self-authored
-                        extensions, persistent memory, conversation compaction,
-                        full-text search, dynamic configuration, tool approval,
-                        response regeneration with version history, and MCP
-                        integration. Try "Execute some code to list all .ts
-                        files" or "Create an extension for temperature
-                        conversion."
+                        A regulatory RSS feed assistant with Project Think
+                        tools: ask what needs assessment, inspect recent Health
+                        Canada updates, search categories like MDEL or Drug, and
+                        cite source links from the seeded feed.
                       </Text>
                     </span>
                   </div>
@@ -1273,7 +1472,7 @@ function Chat({
               <Empty
                 icon={<RobotIcon size={32} />}
                 title="Start a conversation"
-                description='Try "Write a hello.txt file", "Execute code to find all TODOs", or "Create an extension for unit conversion"'
+                description='Try "What needs assessment this week?", "Show recent MDEL updates", or "Summarize Track & assess items."'
               />
             </>
           )}
@@ -1623,7 +1822,7 @@ function Chat({
                   send();
                 }
               }}
-              placeholder="Try: What's the weather in Paris? Or: Write a hello.txt file"
+              placeholder='Try: "Show recent MDEL updates" or "What needs assessment this week?"'
               disabled={!isConnected || isStreaming}
               rows={2}
               className="flex-1 ring-0! focus:ring-0! shadow-none! bg-transparent! outline-none!"
@@ -1935,7 +2134,9 @@ function MultiChatApp({
     renameChat,
     deleteChat,
     addMcpServer,
-    removeMcpServer
+    removeMcpServer,
+    recentRssItems,
+    getRssStats
   } = useChats();
   const [activeId, setActiveId] = useState<string | null>(null);
 
@@ -2031,6 +2232,8 @@ function MultiChatApp({
               mcpState={mcpState}
               addMcpServer={addMcpServer}
               removeMcpServer={removeMcpServer}
+              recentRssItems={recentRssItems}
+              getRssStats={getRssStats}
               onRequestRename={() => handleRename(activeChat)}
               onRequestDelete={() => handleDelete(activeChat)}
             />
